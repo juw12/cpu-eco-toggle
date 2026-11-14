@@ -2,3 +2,7 @@
 EcoToggle.vbs
 EcoToggle.ico
 EcoToggle.log
+
+# Your own after-restart script and the list it writes
+after_vector_restart.ps1
+VectorResume.txt

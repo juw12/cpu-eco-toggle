@@ -307,12 +307,22 @@ $backgroundNames = @(
 )
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left
+$restartVectorAfterCrash = $true      # start Vector again after a crash (never after you close it)
+$maxVectorRestartsPerHour = 3         # then stop, so a crash loop cannot keep going
+$afterRestartScript = Join-Path $PSScriptRoot 'after_vector_restart.ps1'   # optional, runs after a restart
 
 $script:ecoOn = $false
 $script:changed = @{}                 # pid -> original Priority / Affinity / StartTime, Limited = on eco cores
 $script:headlessEdge = @{}            # msedge pid -> is it a headless automation browser?
 $script:memoryWarned = $false
 $script:tickCount = 0
+$script:restartVector = $restartVectorAfterCrash
+$script:vectorProcess = $null         # Vector's main process, held open so its exit code can be read
+$script:vectorExePath = $null
+$script:vectorGoneAt = $null          # when that process ended
+$script:vectorCrashed = $false        # it ended with an error and has not been restarted yet
+$script:vectorRestarts = @()          # times of the restarts in the last hour
+$script:vectorWaitLogged = $false
 
 # --- Process selection ----------------------------------------------------------------------
 function Test-UnderVector([hashtable]$byId, [int]$id) {
@@ -612,6 +622,118 @@ function Test-MemoryGuard {
     }
 }
 
+# --- Vector restart -------------------------------------------------------------------------
+function Get-VectorMainId([hashtable]$byId) {
+    # Vector's main process is the Vector.exe that was not started by another Vector.exe.
+    foreach ($p in $byId.Values) {
+        if ($p.Name -ne 'Vector.exe') {
+            continue
+        }
+        $parent = $byId[[int]$p.ParentProcessId]
+        if (-not $parent -or $parent.Name -ne 'Vector.exe') {
+            return [int]$p.ProcessId
+        }
+    }
+    return 0
+}
+
+function Start-VectorApp([string]$path) {
+    # Through Explorer, so Vector does not start as a child of this tray app.
+    Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $path)
+}
+
+function Start-AfterRestartScript {
+    # Runs on its own, so a slow script cannot freeze the tray.
+    if (Test-Path $afterRestartScript) {
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $afterRestartScript)
+        )
+    }
+}
+
+function Restart-Vector {
+    $oneHourAgo = (Get-Date).AddHours(-1)
+    $script:vectorRestarts = @($script:vectorRestarts | Where-Object { $_ -gt $oneHourAgo })
+    if ($script:vectorRestarts.Count -ge $maxVectorRestartsPerHour) {
+        $script:vectorCrashed = $false
+        $notifyIcon.ShowBalloonTip(
+            10000,
+            "$appName - Vector not restarted",
+            "Vector crashed again after $maxVectorRestartsPerHour restarts in an hour. Start it yourself when the PC has calmed down.",
+            'Warning'
+        )
+        Write-Log "Vector NOT restarted - already $maxVectorRestartsPerHour restarts in the last hour"
+        return
+    }
+    $freeGB = [EcoNative.Memory]::GetCommitFreeGB()
+    if ($freeGB -lt $guardCommitFreeGB) {
+        # Starting it into a full memory would only crash it again. Try again on the next pass.
+        if (-not $script:vectorWaitLogged) {
+            $script:vectorWaitLogged = $true
+            $notifyIcon.ShowBalloonTip(
+                10000,
+                "$appName - Vector crashed",
+                ('Only {0:N1} GB of virtual memory left. Vector is restarted as soon as there is room; close something to speed that up.' -f $freeGB),
+                'Warning'
+            )
+            Write-Log ('Vector restart waiting - only {0:N1} GB of virtual memory left' -f $freeGB)
+        }
+        return
+    }
+    $script:vectorCrashed = $false
+    $script:vectorWaitLogged = $false
+    $script:vectorRestarts += Get-Date
+    Start-VectorApp $script:vectorExePath
+    Start-AfterRestartScript
+    $notifyIcon.ShowBalloonTip(
+        10000,
+        "$appName - Vector restarted",
+        'Vector crashed and was started again. Its chats do not continue by themselves: open each one and send "continue".',
+        'Warning'
+    )
+    Write-Log 'Vector restarted after a crash'
+}
+
+function Watch-Vector([hashtable]$byId = (Get-ProcessTable)) {
+    # Runs every 30 s. A clean close ends with exit code 0; a crash or a forced close does not.
+    if ($script:vectorProcess -and $script:vectorProcess.HasExited) {
+        $exitCode = $script:vectorProcess.ExitCode
+        $script:vectorGoneAt = $script:vectorProcess.ExitTime
+        $script:vectorProcess.Dispose()
+        $script:vectorProcess = $null
+        $script:vectorCrashed = ($exitCode -ne 0)
+        if ($script:vectorCrashed) {
+            Write-Log ('Vector stopped unexpectedly (exit code 0x{0:X8})' -f $exitCode)
+            return                        # one pass for it to come back by itself
+        }
+    }
+    if ($script:vectorProcess) {
+        return
+    }
+    $mainId = Get-VectorMainId $byId
+    if ($mainId) {
+        try {
+            $proc = [System.Diagnostics.Process]::GetProcessById($mainId)
+            # Leftover helper processes of the Vector that just ended are older than its exit.
+            if (-not $script:vectorGoneAt -or $proc.StartTime -gt $script:vectorGoneAt) {
+                [void]$proc.Handle        # the open handle keeps the exit code readable later
+                $script:vectorExePath = $proc.MainModule.FileName
+                $script:vectorProcess = $proc
+                $script:vectorCrashed = $false
+                $script:vectorWaitLogged = $false
+                Write-Log "watching Vector (pid $mainId)"
+            }
+        }
+        catch {
+            # It ended between the scan and here; the next pass sorts it out.
+        }
+        return
+    }
+    if ($script:vectorCrashed -and $script:restartVector) {
+        Restart-Vector
+    }
+}
+
 # --- Tray UI --------------------------------------------------------------------------------
 $iconOn = [System.Drawing.Icon]::FromHandle((New-EcoBitmap 32 $true).GetHicon())
 $iconOff = [System.Drawing.Icon]::FromHandle((New-EcoBitmap 32 $false).GetHicon())
@@ -630,6 +752,9 @@ $toggleItem = $menu.Items.Add('Turn ON')
 $statusItem = $menu.Items.Add('')
 $statusItem.Enabled = $false
 $trimItem = $menu.Items.Add('Trim background memory now')
+$restartItem = $menu.Items.Add('Restart Vector after a crash')
+$restartItem.CheckOnClick = $true
+$restartItem.Checked = $script:restartVector
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $exitItem = $menu.Items.Add('Exit (restores everything)')
 $notifyIcon.ContextMenuStrip = $menu
@@ -705,6 +830,9 @@ $trimItem.Add_Click({
         Write-Log "trim error: $($_.Exception.Message)"
     }
 })
+$restartItem.Add_CheckedChanged({
+    $script:restartVector = $restartItem.Checked
+})
 $exitItem.Add_Click({
     [void](Restore-Limits $false)
     Write-Log 'exit - everything restored'
@@ -723,6 +851,7 @@ $timer.Add_Tick({
         if ($script:tickCount % $reapplyEveryTicks -eq 0) {
             Invoke-EcoLimits
             Test-MemoryGuard
+            Watch-Vector
         }
         Update-TrayUi
     }
@@ -739,6 +868,7 @@ if ($adoptedCount -gt 0) {
 }
 Invoke-EcoLimits
 Write-Log "started - eco is $(if ($script:ecoOn) { 'ON' } else { 'OFF' }), Vector guard on ($($script:changed.Count) processes at low priority)"
+Watch-Vector
 
 $notifyIcon.Visible = $true
 Update-TrayUi

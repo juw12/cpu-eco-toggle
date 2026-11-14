@@ -21,6 +21,23 @@ that. The guard therefore also warns in the tray, and writes the biggest memory 
 `EcoToggle.log`, when less than 6 GB is left (`$guardCommitFreeGB` in `EcoToggle.ps1`). It warns
 once and re-arms after memory recovers. It never closes anything — that decision stays with you.
 
+### Restart Vector after a crash
+
+The guard keeps an eye on Vector's main process. When it ends with an error code (a crash, or a
+forced close from Task Manager) and no Vector process is left, Vector is started again and a tray
+notice tells you. Closing Vector yourself ends with code 0 and is left alone.
+
+- It waits while less than 6 GB of virtual memory is free, so Vector is not started into the same
+  shortage that crashed it.
+- It stops after 3 restarts in an hour (`$maxVectorRestartsPerHour`), so a crash loop cannot run on.
+- A Vector that is frozen but still running is not closed. The restart happens once you end it.
+- Switch it off for this session in the tray menu, or for good with `$restartVectorAfterCrash`.
+
+**Vector does not continue its chats after a restart**, and nothing outside Vector can do that for
+it: each interrupted chat needs a reply such as *continue*. To make that quick, put a script named
+`after_vector_restart.ps1` next to `EcoToggle.ps1`. It runs after every restart — for example to
+open a list of the tasks that were in progress. The file is yours and is not committed.
+
 ## What it limits
 
 Processes named `opencode`, `cargo`, `rustc`, `lean`, `lake`, `ollama`, `llama-server`, `python`,
@@ -52,6 +69,7 @@ To get a taskbar button: Start → *CPU Eco Toggle* → right-click → **Pin to
 | Hover tray icon | Live state, CPU % and RAM % |
 | Right-click | Status line: how many background processes the guard is holding |
 | Right-click → *Trim background memory now* | Releases RAM from windowless background processes (pages reload on demand) |
+| Right-click → *Restart Vector after a crash* | Tick or untick: start Vector again when it crashes |
 | Right-click → *Exit* | Restores everything, then closes |
 
 If the icon is hidden behind the tray **^** arrow, drag it onto the taskbar.
@@ -64,7 +82,8 @@ If the icon is hidden behind the tray **^** arrow, drag it onto the taskbar.
 | `install_eco_toggle.ps1` | Builds icon + launcher, (re)creates shortcuts, starts the app |
 | `revert_cpu_limits.ps1` | Emergency undo: resets any process left on the eco core mask |
 
-`EcoToggle.vbs`, `EcoToggle.ico` and `EcoToggle.log` are generated locally and not committed.
+`EcoToggle.vbs`, `EcoToggle.ico` and `EcoToggle.log` are generated locally and not committed. The
+same goes for your own `after_vector_restart.ps1` and the `VectorResume.txt` list it may write.
 
 ## Notes
 
