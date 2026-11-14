@@ -1,6 +1,7 @@
 # Installs the CPU Eco tray switch from whatever folder this script sits in:
 # checks the script, builds the icon, writes the hidden-window launcher, (re)creates the Start menu
-# shortcut and any taskbar pin, then starts the tray switch through Explorer.
+# shortcut, the Startup shortcut (so the Vector guard runs after every sign-in) and any taskbar pin,
+# then starts the tray switch through Explorer.
 # Re-run it after moving the folder.
 $folder = $PSScriptRoot
 $mainScript = Join-Path $folder 'EcoToggle.ps1'
@@ -29,7 +30,8 @@ Set-Content -Path $launcher -Value $vbs -Encoding ASCII
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPaths = @(
-    (Join-Path ([Environment]::GetFolderPath('Programs')) 'CPU Eco Toggle.lnk')
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'CPU Eco Toggle.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('Startup')) 'CPU Eco Toggle.lnk')
 )
 $pinnedPath = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\CPU Eco Toggle.lnk'
 if (Test-Path $pinnedPath) {
