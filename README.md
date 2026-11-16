@@ -63,6 +63,13 @@ fewer cores) only while the switch is ON, and run at full speed while it is OFF.
 covers that process and everything it starts. By default it holds the OpenCode research queue
 workers (`opencode ... --title "queue: ..."`).
 
+**Full-speed jobs** are never slowed, ON or OFF: no low priority, no core limit and no memory
+trim. Use it for scheduled work with a deadline. The list is `$fullSpeedJobs` in `EcoToggle.ps1`,
+matched the same way (a process name plus a text in its command line, and everything it
+starts). By default it holds three weekly report runners (`run_weekly.ps1`,
+`run_approval_weekly.ps1`, `run_weekly_ai_usage.ps1`): at low priority on a PC at 100% CPU their
+page loads timed out and the Monday reports did not go out.
+
 ## Install
 
 ```powershell

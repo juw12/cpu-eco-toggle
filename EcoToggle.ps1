@@ -12,6 +12,8 @@
 # OFF: the cores are given back. The guard priority stays.
 # Eco-only jobs ($ecoOnlyJobs, e.g. the OpenCode research queue) are the exception: they are
 #      slowed (low priority + fewer cores) only while eco is ON and run at full speed when OFF.
+# Full-speed jobs ($fullSpeedJobs, e.g. scheduled weekly reports with a deadline) are never
+#      slowed, ON or OFF: no low priority, no core limit, no memory trim.
 # Exit: every process changed by this tool gets its original priority and cores back.
 #
 # Left-click the tray icon to toggle. Launching the script again while it runs also toggles
@@ -342,6 +344,14 @@ $backgroundNames = @(
 $ecoOnlyJobs = @(
     @{ Name = 'opencode'; CommandLineContains = '--title "queue: ' }   # OpenCode research queue workers
 )
+# Jobs that are never slowed, ON or OFF: scheduled work with a deadline. Same matching as above.
+# (2026-11-16: the guard put the Monday weekly reports at low priority on a PC at 100% CPU; their
+# page loads timed out and no report went out until the afternoon.)
+$fullSpeedJobs = @(
+    @{ Name = 'powershell'; CommandLineContains = 'run_weekly.ps1' }            # weekly yield report + yield deck
+    @{ Name = 'powershell'; CommandLineContains = 'run_approval_weekly.ps1' }   # weekly approval slides
+    @{ Name = 'powershell'; CommandLineContains = 'run_weekly_ai_usage.ps1' }   # weekly AI usage deck
+)
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left
 $restartVectorAfterCrash = $true      # start Vector again after a crash (never after you close it)
@@ -353,6 +363,7 @@ $script:ecoOn = $false
 $script:changed = @{}                 # pid -> original Priority / Affinity / StartTime, Limited = on eco cores
 $script:headlessEdge = @{}            # msedge pid -> is it a headless automation browser?
 $script:ecoOnlyRoots = @{}            # pid -> does its command line match an eco-only job?
+$script:fullSpeedRoots = @{}          # pid -> does its command line match a full-speed job?
 $script:memoryWarned = $false
 $script:tickCount = 0
 $script:restartVector = $restartVectorAfterCrash
@@ -449,16 +460,17 @@ function Update-HeadlessEdgeCache([hashtable]$byId) {
     }
 }
 
-function Update-EcoOnlyCache([hashtable]$byId) {
-    # Eco-only jobs are told apart by their command line, which is slow to read, so each
-    # candidate process is asked once (same approach as the headless Edge check).
-    foreach ($id in @($script:ecoOnlyRoots.Keys)) {
+function Update-JobCache([hashtable]$byId, [object[]]$jobs, [hashtable]$roots) {
+    # Jobs ($ecoOnlyJobs, $fullSpeedJobs) are told apart by their command line, which is slow to
+    # read, so each candidate process is asked once (same approach as the headless Edge check).
+    # $roots is that job list's cache: pid -> does its command line match?
+    foreach ($id in @($roots.Keys)) {
         if (-not $byId.ContainsKey($id)) {
-            $script:ecoOnlyRoots.Remove($id)
+            $roots.Remove($id)
         }
     }
     $textsByExeName = @{}
-    foreach ($job in $ecoOnlyJobs) {
+    foreach ($job in $jobs) {
         $exeName = "$($job.Name).exe"
         if (-not $textsByExeName.ContainsKey($exeName)) {
             $textsByExeName[$exeName] = @()
@@ -467,7 +479,7 @@ function Update-EcoOnlyCache([hashtable]$byId) {
     }
     $unknownIds = @(
         foreach ($p in $byId.Values) {
-            if ($textsByExeName.ContainsKey($p.Name) -and -not $script:ecoOnlyRoots.ContainsKey($p.ProcessId)) {
+            if ($textsByExeName.ContainsKey($p.Name) -and -not $roots.ContainsKey($p.ProcessId)) {
                 $p.ProcessId
             }
         }
@@ -488,16 +500,16 @@ function Update-EcoOnlyCache([hashtable]$byId) {
         }
     }
     foreach ($id in $unknownIds) {
-        $script:ecoOnlyRoots[$id] = $matchedIds.ContainsKey($id)
+        $roots[$id] = $matchedIds.ContainsKey($id)
     }
 }
 
-function Test-EcoOnly([hashtable]$byId, [int]$id) {
-    # True for an eco-only job and for everything it started.
+function Test-InJob([hashtable]$byId, [int]$id, [hashtable]$roots) {
+    # True for a job in this cache and for everything it started.
     $seen = @{}
     while ($byId.ContainsKey($id) -and -not $seen.ContainsKey($id)) {
         $seen[$id] = $true
-        if ($script:ecoOnlyRoots[$id]) {
+        if ($roots[$id]) {
             return $true
         }
         $id = [int]$byId[$id].ParentProcessId
@@ -505,10 +517,19 @@ function Test-EcoOnly([hashtable]$byId, [int]$id) {
     return $false
 }
 
+function Update-EcoOnlyCache([hashtable]$byId) {
+    Update-JobCache $byId $ecoOnlyJobs $script:ecoOnlyRoots
+}
+
+function Test-EcoOnly([hashtable]$byId, [int]$id) {
+    return (Test-InJob $byId $id $script:ecoOnlyRoots)
+}
+
 function Get-BackgroundTargetIds([hashtable]$byId = (Get-ProcessTable)) {
     if ($backgroundNames -contains 'msedge') {
         Update-HeadlessEdgeCache $byId
     }
+    Update-JobCache $byId $fullSpeedJobs $script:fullSpeedRoots
     foreach ($p in $byId.Values) {
         $name = $p.Name -replace '\.exe$', ''
         if ($backgroundNames -notcontains $name) {
@@ -519,6 +540,9 @@ function Get-BackgroundTargetIds([hashtable]$byId = (Get-ProcessTable)) {
         }
         if (Test-UnderVector $byId $p.ProcessId) {
             continue
+        }
+        if (Test-InJob $byId $p.ProcessId $script:fullSpeedRoots) {
+            continue                          # deadline job: never slowed
         }
         $p.ProcessId
     }
