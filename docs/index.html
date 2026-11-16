@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CPU Eco Toggle: one-click tray switch for a pinned CPU</title>
-<meta name="description" content="A Windows tray switch that moves windowless background jobs onto fewer cores at lower priority without stopping anything. One more click restores them.">
+<title>CPU Eco Toggle: tray guard for a pinned CPU</title>
+<meta name="description" content="A Windows tray guard that keeps windowless background jobs at lower priority, moves them onto fewer cores with one click, and restarts Vector after a crash or freeze.">
 <style>
   :root {
     --bg: #0f1412;
@@ -169,15 +169,15 @@
 <main>
   <section>
     <h1>When the CPU is pinned at 100%, <em>one click</em> gives it room.</h1>
-    <p class="lead">A Windows tray switch for when agents, builds and local LLMs swamp your PC. It moves windowless background jobs onto fewer cores at lower priority. Nothing is stopped, and one more click restores them.</p>
+    <p class="lead">A Windows tray guard for when agents, builds and local LLMs swamp your PC. Windowless background jobs always run at lower priority, and one click moves them onto fewer cores as well. No job is stopped. It also restarts Vector after a crash or freeze.</p>
     <ul class="states">
       <li>
         <svg width="40" height="40" viewBox="0 0 32 32" role="img" aria-label="Green icon: ON"><circle cx="16" cy="16" r="15.5" fill="#22aa55"/><use href="#power"/></svg>
-        <div><b>ON</b><span>Background jobs run on 5 of 8 cores at BelowNormal priority, about 3/8 of the CPU stays free for what you are using. New jobs are picked up every 30 s.</span></div>
+        <div><b>ON</b><span>Background jobs are moved onto 5 of 8 cores, so about 3/8 of the CPU stays free for what you are using. New jobs are picked up every 30 s.</span></div>
       </li>
       <li>
         <svg width="40" height="40" viewBox="0 0 32 32" role="img" aria-label="Grey icon: OFF"><circle cx="16" cy="16" r="15.5" fill="#787878"/><use href="#power"/></svg>
-        <div><b>OFF</b><span>Every process it changed gets its original priority and cores back. Windows you can see, and anything Vector started, are never touched.</span></div>
+        <div><b>OFF</b><span>The cores are given back. Background jobs stay at BelowNormal priority until you choose Exit, which restores everything. Windows you can see, and anything Vector started, are never touched.</span></div>
       </li>
     </ul>
     <p class="links">
@@ -200,9 +200,10 @@
     <div class="tip">CPU Eco: ON | CPU 81% | RAM 68%</div>
 
     <div class="menu" role="img" aria-label="Right-click menu">
-      <div class="hover">Turn OFF (restore full speed)</div>
+      <div class="hover">Turn OFF (give all cores back)</div>
       <div class="disabled">Limiting 31 background processes to 5 of 8 cores</div>
       <div>Trim background memory now</div>
+      <div>&#10003; Restart Vector after a crash or freeze</div>
       <hr>
       <div>Exit (restores everything)</div>
     </div>

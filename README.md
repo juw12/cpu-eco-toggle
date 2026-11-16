@@ -1,7 +1,7 @@
 # CPU Eco Toggle
 
 A one-click Windows tray switch that gives your PC breathing room when background work
-(AI agents, builds, local LLMs, long Python jobs) pins the CPU at 100% — **without stopping anything**.
+(AI agents, builds, local LLMs, long Python jobs) pins the CPU at 100% — **without stopping that work**.
 
 - **Vector guard (always on, in both states):** background workloads run at BelowNormal priority,
   so the apps you are using — Vector included — get the CPU first. It starts with Windows and
@@ -12,7 +12,8 @@ A one-click Windows tray switch that gives your PC breathing room when backgroun
 - **OFF (grey):** the cores are given back. The guard priority stays.
 - **Exit:** every process the tool changed gets its original priority and cores back.
 
-Nothing is ever killed or paused.
+No background job is ever killed or paused. The one thing the tool can end is a frozen Vector,
+so that it can be started again (see below).
 
 ### Low-memory warning
 
