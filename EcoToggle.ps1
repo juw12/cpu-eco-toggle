@@ -11,7 +11,8 @@
 # ON : the same background workloads are also kept off some cores.
 # OFF: the cores are given back. The guard priority stays.
 # Eco-only jobs ($ecoOnlyJobs, e.g. the OpenCode research queue) are the exception: they are
-#      slowed (low priority + fewer cores) only while eco is ON and run at full speed when OFF.
+#      slowed (fewer cores, priority unchanged) only while eco is ON and run at full speed when
+#      OFF.
 # Full-speed jobs ($fullSpeedJobs, e.g. scheduled weekly reports with a deadline) are never
 #      slowed, ON or OFF: no low priority, no core limit, no memory trim.
 # Exit: every process changed by this tool gets its original priority and cores back.
@@ -340,6 +341,9 @@ $backgroundNames = @(
     'opencode', 'cargo', 'rustc', 'lean', 'lake', 'ollama', 'llama-server', 'msedge', 'python', 'pythonw'
 )
 # Jobs that are slowed only while eco is ON; while it is OFF the guard leaves them at full speed.
+# Slowed means fewer cores only. Their priority is never lowered.
+# (2026-11-16: at low priority on a PC at 100% CPU the research queue workers got no CPU at all
+# and produced one report in three hours.)
 # A job is a process with this name whose command line contains the text, plus everything it starts.
 $ecoOnlyJobs = @(
     @{ Name = 'opencode'; CommandLineContains = '--title "queue: ' }   # OpenCode research queue workers
@@ -550,7 +554,8 @@ function Get-BackgroundTargetIds([hashtable]$byId = (Get-ProcessTable)) {
 
 function Invoke-EcoLimits {
     # Runs every 30 s in both states. The Vector guard (BelowNormal priority) is always applied;
-    # the core limit is added only while eco is ON. Eco-only jobs get both, but only while eco is ON.
+    # the core limit is added only while eco is ON. Eco-only jobs get the core limit while eco
+    # is ON and nothing else; their priority is never lowered.
     $byId = Get-ProcessTable
     foreach ($id in @($script:changed.Keys)) {
         if (-not $byId.ContainsKey($id)) {
@@ -607,7 +612,8 @@ function Invoke-EcoLimits {
                     Start    = $proc.StartTime
                     Limited  = $false
                 }
-                if ($proc.PriorityClass -ne [System.Diagnostics.ProcessPriorityClass]::Idle) {
+                $lowerPriority = -not (Test-EcoOnly $byId $id)
+                if ($lowerPriority -and $proc.PriorityClass -ne [System.Diagnostics.ProcessPriorityClass]::Idle) {
                     $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
                 }
                 $script:changed[$id] = $entry
