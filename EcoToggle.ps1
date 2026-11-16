@@ -10,6 +10,8 @@
 #      window stays frozen (see README).
 # ON : the same background workloads are also kept off some cores.
 # OFF: the cores are given back. The guard priority stays.
+# Eco-only jobs ($ecoOnlyJobs, e.g. the OpenCode research queue) are the exception: they are
+#      slowed (low priority + fewer cores) only while eco is ON and run at full speed when OFF.
 # Exit: every process changed by this tool gets its original priority and cores back.
 #
 # Left-click the tray icon to toggle. Launching the script again while it runs also toggles
@@ -335,6 +337,11 @@ $legacyMasks = @(0xFC, 0xF8)          # limits applied manually earlier in chat
 $backgroundNames = @(
     'opencode', 'cargo', 'rustc', 'lean', 'lake', 'ollama', 'llama-server', 'msedge', 'python', 'pythonw'
 )
+# Jobs that are slowed only while eco is ON; while it is OFF the guard leaves them at full speed.
+# A job is a process with this name whose command line contains the text, plus everything it starts.
+$ecoOnlyJobs = @(
+    @{ Name = 'opencode'; CommandLineContains = '--title "queue: ' }   # OpenCode research queue workers
+)
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left
 $restartVectorAfterCrash = $true      # start Vector again after a crash (never after you close it)
@@ -345,6 +352,7 @@ $afterRestartScript = Join-Path $PSScriptRoot 'after_vector_restart.ps1'   # opt
 $script:ecoOn = $false
 $script:changed = @{}                 # pid -> original Priority / Affinity / StartTime, Limited = on eco cores
 $script:headlessEdge = @{}            # msedge pid -> is it a headless automation browser?
+$script:ecoOnlyRoots = @{}            # pid -> does its command line match an eco-only job?
 $script:memoryWarned = $false
 $script:tickCount = 0
 $script:restartVector = $restartVectorAfterCrash
@@ -441,6 +449,62 @@ function Update-HeadlessEdgeCache([hashtable]$byId) {
     }
 }
 
+function Update-EcoOnlyCache([hashtable]$byId) {
+    # Eco-only jobs are told apart by their command line, which is slow to read, so each
+    # candidate process is asked once (same approach as the headless Edge check).
+    foreach ($id in @($script:ecoOnlyRoots.Keys)) {
+        if (-not $byId.ContainsKey($id)) {
+            $script:ecoOnlyRoots.Remove($id)
+        }
+    }
+    $textsByExeName = @{}
+    foreach ($job in $ecoOnlyJobs) {
+        $exeName = "$($job.Name).exe"
+        if (-not $textsByExeName.ContainsKey($exeName)) {
+            $textsByExeName[$exeName] = @()
+        }
+        $textsByExeName[$exeName] += $job.CommandLineContains
+    }
+    $unknownIds = @(
+        foreach ($p in $byId.Values) {
+            if ($textsByExeName.ContainsKey($p.Name) -and -not $script:ecoOnlyRoots.ContainsKey($p.ProcessId)) {
+                $p.ProcessId
+            }
+        }
+    )
+    if ($unknownIds.Count -eq 0) {
+        return
+    }
+    $filter = ($textsByExeName.Keys | ForEach-Object { "Name='$_'" }) -join ' OR '
+    if ($unknownIds.Count -le 20) {
+        $filter = ($unknownIds | ForEach-Object { "ProcessId=$_" }) -join ' OR '
+    }
+    $matchedIds = @{}
+    foreach ($p in Get-CimInstance Win32_Process -Filter $filter -Property ProcessId, Name, CommandLine) {
+        foreach ($text in $textsByExeName[$p.Name]) {
+            if ("$($p.CommandLine)".Contains($text)) {
+                $matchedIds[[int]$p.ProcessId] = $true
+            }
+        }
+    }
+    foreach ($id in $unknownIds) {
+        $script:ecoOnlyRoots[$id] = $matchedIds.ContainsKey($id)
+    }
+}
+
+function Test-EcoOnly([hashtable]$byId, [int]$id) {
+    # True for an eco-only job and for everything it started.
+    $seen = @{}
+    while ($byId.ContainsKey($id) -and -not $seen.ContainsKey($id)) {
+        $seen[$id] = $true
+        if ($script:ecoOnlyRoots[$id]) {
+            return $true
+        }
+        $id = [int]$byId[$id].ParentProcessId
+    }
+    return $false
+}
+
 function Get-BackgroundTargetIds([hashtable]$byId = (Get-ProcessTable)) {
     if ($backgroundNames -contains 'msedge') {
         Update-HeadlessEdgeCache $byId
@@ -462,13 +526,14 @@ function Get-BackgroundTargetIds([hashtable]$byId = (Get-ProcessTable)) {
 
 function Invoke-EcoLimits {
     # Runs every 30 s in both states. The Vector guard (BelowNormal priority) is always applied;
-    # the core limit is added only while eco is ON.
+    # the core limit is added only while eco is ON. Eco-only jobs get both, but only while eco is ON.
     $byId = Get-ProcessTable
     foreach ($id in @($script:changed.Keys)) {
         if (-not $byId.ContainsKey($id)) {
             $script:changed.Remove($id)       # the process has ended
         }
     }
+    Update-EcoOnlyCache $byId
     # Opening a process is the slow part, so only the ones that need a change are opened.
     $windowOwnerIds = Get-WindowOwnerIds
     $pendingIds = @(
@@ -476,7 +541,7 @@ function Invoke-EcoLimits {
             $entry = $script:changed[$id]
             $hasWindow = $windowOwnerIds.ContainsKey($id)
             if (-not $entry) {
-                if (-not $hasWindow) {
+                if (-not $hasWindow -and ($script:ecoOn -or -not (Test-EcoOnly $byId $id))) {
                     $id                       # new background process
                 }
             }
@@ -534,9 +599,11 @@ function Invoke-EcoLimits {
 }
 
 function Restore-Limits([bool]$keepGuard) {
-    # OFF ($keepGuard): give the cores back, the guard priority stays.
+    # OFF ($keepGuard): give the cores back, the guard priority stays. Eco-only jobs get their
+    # priority back as well and are let go.
     # Exit: put the original priority back as well and forget everything.
     $restored = 0
+    $byId = Get-ProcessTable
     $procById = Get-LiveProcesses
     foreach ($id in @($script:changed.Keys)) {
         $entry = $script:changed[$id]
@@ -544,6 +611,7 @@ function Restore-Limits([bool]$keepGuard) {
         if (-not $proc) {
             continue
         }
+        $letGo = $keepGuard -and (Test-EcoOnly $byId $id)
         try {
             if ($proc.StartTime -eq $entry.Start) {
                 if ($entry.Limited) {
@@ -551,8 +619,11 @@ function Restore-Limits([bool]$keepGuard) {
                     $entry.Limited = $false
                     $restored++
                 }
-                if (-not $keepGuard) {
+                if (-not $keepGuard -or $letGo) {
                     $proc.PriorityClass = $entry.Priority
+                }
+                if ($letGo) {
+                    $script:changed.Remove($id)
                 }
             }
         }
@@ -568,7 +639,8 @@ function Restore-Limits([bool]$keepGuard) {
     foreach ($proc in Get-ProcessesOnMasks $procById (@($ecoMask) + $legacyMasks)) {
         try {
             $proc.ProcessorAffinity = [IntPtr]$allCoresMask
-            if (-not $keepGuard -and $proc.PriorityClass -eq [System.Diagnostics.ProcessPriorityClass]::BelowNormal) {
+            $priorityBack = (-not $keepGuard) -or (Test-EcoOnly $byId $proc.Id)
+            if ($priorityBack -and $proc.PriorityClass -eq [System.Diagnostics.ProcessPriorityClass]::BelowNormal) {
                 $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal
             }
             $restored++

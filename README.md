@@ -57,6 +57,12 @@ Processes named `opencode`, `cargo`, `rustc`, `lean`, `lake`, `ollama`, `llama-s
 
 Edit `$backgroundNames` in `EcoToggle.ps1` to change the list.
 
+**Eco-only jobs** are the exception to the always-on guard: they are slowed (low priority and
+fewer cores) only while the switch is ON, and run at full speed while it is OFF. The list is
+`$ecoOnlyJobs` in `EcoToggle.ps1`: a process name plus a text its command line must contain. It
+covers that process and everything it starts. By default it holds the OpenCode research queue
+workers (`opencode ... --title "queue: ..."`).
+
 ## Install
 
 ```powershell
