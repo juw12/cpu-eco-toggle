@@ -6,6 +6,8 @@
 #      Windows is about to run out of virtual memory, because that is what makes apps crash.
 #      Processes with a visible window and anything started by Vector are never touched.
 #      New background processes are picked up every 30 s. Nothing is stopped.
+#      Vector itself is started again after a crash, and ended and started again when its
+#      window stays frozen (see README).
 # ON : the same background workloads are also kept off some cores.
 # OFF: the cores are given back. The guard priority stays.
 # Exit: every process changed by this tool gets its original priority and cores back.
@@ -232,6 +234,34 @@ namespace EcoNative
             ownerIds.Keys.CopyTo(result, 0);
             return result;
         }
+
+        [DllImport("user32.dll")]
+        private static extern bool IsHungAppWindow(IntPtr window);
+
+        // True when a visible main window of the process has stopped answering Windows:
+        // what Task Manager shows as "Not responding". Does not wait for the window.
+        public static bool IsProcessHung(int processId)
+        {
+            const uint GetOwner = 4;
+            bool hung = false;
+            EnumWindowsCallback callback = delegate(IntPtr window, IntPtr parameter)
+            {
+                if (IsWindowVisible(window) && GetWindow(window, GetOwner) == IntPtr.Zero)
+                {
+                    uint ownerId;
+                    GetWindowThreadProcessId(window, out ownerId);
+                    if ((int)ownerId == processId && IsHungAppWindow(window))
+                    {
+                        hung = true;
+                        return false;
+                    }
+                }
+                return true;
+            };
+            EnumWindows(callback, IntPtr.Zero);
+            GC.KeepAlive(callback);
+            return hung;
+        }
     }
 
     public static class Memory
@@ -308,6 +338,7 @@ $backgroundNames = @(
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left
 $restartVectorAfterCrash = $true      # start Vector again after a crash (never after you close it)
+$restartVectorWhenFrozenMinutes = 3   # also end and restart it when frozen this long (0 = never)
 $maxVectorRestartsPerHour = 3         # then stop, so a crash loop cannot keep going
 $afterRestartScript = Join-Path $PSScriptRoot 'after_vector_restart.ps1'   # optional, runs after a restart
 
@@ -323,6 +354,10 @@ $script:vectorGoneAt = $null          # when that process ended
 $script:vectorCrashed = $false        # it ended with an error and has not been restarted yet
 $script:vectorRestarts = @()          # times of the restarts in the last hour
 $script:vectorWaitLogged = $false
+$script:vectorStopReason = 'crashed'  # 'frozen' when this tool ended it
+$script:vectorFrozenSince = $null     # when its window stopped answering
+$script:vectorLastWatch = $null       # when the window was last looked at
+$script:vectorFrozenGaveUp = $false
 
 # --- Process selection ----------------------------------------------------------------------
 function Test-UnderVector([hashtable]$byId, [int]$id) {
@@ -651,15 +686,20 @@ function Start-AfterRestartScript {
     }
 }
 
-function Restart-Vector {
+function Get-VectorRestartCount {
     $oneHourAgo = (Get-Date).AddHours(-1)
     $script:vectorRestarts = @($script:vectorRestarts | Where-Object { $_ -gt $oneHourAgo })
-    if ($script:vectorRestarts.Count -ge $maxVectorRestartsPerHour) {
+    return $script:vectorRestarts.Count
+}
+
+function Restart-Vector {
+    $what = if ($script:vectorStopReason -eq 'frozen') { 'was frozen' } else { 'crashed' }
+    if ((Get-VectorRestartCount) -ge $maxVectorRestartsPerHour) {
         $script:vectorCrashed = $false
         $notifyIcon.ShowBalloonTip(
             10000,
             "$appName - Vector not restarted",
-            "Vector crashed again after $maxVectorRestartsPerHour restarts in an hour. Start it yourself when the PC has calmed down.",
+            "Vector $what again after $maxVectorRestartsPerHour restarts in an hour. Start it yourself when the PC has calmed down.",
             'Warning'
         )
         Write-Log "Vector NOT restarted - already $maxVectorRestartsPerHour restarts in the last hour"
@@ -672,7 +712,7 @@ function Restart-Vector {
             $script:vectorWaitLogged = $true
             $notifyIcon.ShowBalloonTip(
                 10000,
-                "$appName - Vector crashed",
+                "$appName - Vector $what",
                 ('Only {0:N1} GB of virtual memory left. Vector is restarted as soon as there is room; close something to speed that up.' -f $freeGB),
                 'Warning'
             )
@@ -688,14 +728,77 @@ function Restart-Vector {
     $notifyIcon.ShowBalloonTip(
         10000,
         "$appName - Vector restarted",
-        'Vector crashed and was started again. Its chats do not continue by themselves: open each one and send "continue".',
+        "Vector $what and was started again. Its chats do not continue by themselves: open each one and send `"continue`".",
         'Warning'
     )
-    Write-Log 'Vector restarted after a crash'
+    Write-Log "Vector restarted - it $what"
+    $script:vectorStopReason = 'crashed'
+}
+
+function Test-VectorFrozen {
+    # True once Vector's window has not answered for $restartVectorWhenFrozenMinutes in a row.
+    $now = Get-Date
+    $lastWatch = $script:vectorLastWatch
+    $script:vectorLastWatch = $now
+    if (-not [EcoNative.Windows]::IsProcessHung($script:vectorProcess.Id)) {
+        if ($script:vectorFrozenSince) {
+            Write-Log 'Vector window answers again'
+        }
+        $script:vectorFrozenSince = $null
+        $script:vectorFrozenGaveUp = $false
+        return $false
+    }
+    if (-not $script:vectorFrozenSince) {
+        $script:vectorFrozenSince = $now
+        Write-Log 'Vector window is not answering'
+        return $false
+    }
+    # Looks normally come every 30 s. A long gap means the whole PC stood still (sleep, or
+    # everything was stuck), so the count starts again: only a stuck Vector is ended.
+    if (($now - $lastWatch).TotalSeconds -gt 90) {
+        $script:vectorFrozenSince = $now
+        return $false
+    }
+    return (($now - $script:vectorFrozenSince).TotalMinutes -ge $restartVectorWhenFrozenMinutes)
+}
+
+function Stop-FrozenVector([hashtable]$byId) {
+    # Ends the frozen Vector and its own helper processes. Programs its chats started are left
+    # alone. Watch-Vector then finds an ended Vector and starts it again.
+    if ((Get-VectorRestartCount) -ge $maxVectorRestartsPerHour) {
+        if (-not $script:vectorFrozenGaveUp) {
+            $script:vectorFrozenGaveUp = $true
+            $notifyIcon.ShowBalloonTip(
+                10000,
+                "$appName - Vector is frozen",
+                "It was already restarted $maxVectorRestartsPerHour times in an hour, so it is left as it is. End it in Task Manager when the PC has calmed down.",
+                'Warning'
+            )
+            Write-Log "Vector frozen but NOT ended - already $maxVectorRestartsPerHour restarts in the last hour"
+        }
+        return
+    }
+    $mainId = $script:vectorProcess.Id
+    $helperIds = @(
+        foreach ($p in $byId.Values) {
+            if ($p.Name -eq 'Vector.exe' -and [int]$p.ParentProcessId -eq $mainId) {
+                [int]$p.ProcessId
+            }
+        }
+    )
+    $frozenMinutes = ((Get-Date) - $script:vectorFrozenSince).TotalMinutes
+    $script:vectorStopReason = 'frozen'
+    $script:vectorFrozenSince = $null
+    $script:vectorProcess.Kill()
+    foreach ($helperId in $helperIds) {
+        Stop-Process -Id $helperId -Force -ErrorAction SilentlyContinue
+    }
+    Write-Log ('Vector was frozen for {0:N1} min - ended it (pid {1} and {2} helper processes)' -f $frozenMinutes, $mainId, $helperIds.Count)
 }
 
 function Watch-Vector([hashtable]$byId = (Get-ProcessTable)) {
     # Runs every 30 s. A clean close ends with exit code 0; a crash or a forced close does not.
+    # A Vector whose window stays frozen is ended here, which then counts as a crash.
     if ($script:vectorProcess -and $script:vectorProcess.HasExited) {
         $exitCode = $script:vectorProcess.ExitCode
         $script:vectorGoneAt = $script:vectorProcess.ExitTime
@@ -708,6 +811,9 @@ function Watch-Vector([hashtable]$byId = (Get-ProcessTable)) {
         }
     }
     if ($script:vectorProcess) {
+        if ($script:restartVector -and $restartVectorWhenFrozenMinutes -gt 0 -and (Test-VectorFrozen)) {
+            Stop-FrozenVector $byId
+        }
         return
     }
     $mainId = Get-VectorMainId $byId
@@ -721,6 +827,9 @@ function Watch-Vector([hashtable]$byId = (Get-ProcessTable)) {
                 $script:vectorProcess = $proc
                 $script:vectorCrashed = $false
                 $script:vectorWaitLogged = $false
+                $script:vectorStopReason = 'crashed'
+                $script:vectorFrozenSince = $null
+                $script:vectorFrozenGaveUp = $false
                 Write-Log "watching Vector (pid $mainId)"
             }
         }
@@ -752,7 +861,7 @@ $toggleItem = $menu.Items.Add('Turn ON')
 $statusItem = $menu.Items.Add('')
 $statusItem.Enabled = $false
 $trimItem = $menu.Items.Add('Trim background memory now')
-$restartItem = $menu.Items.Add('Restart Vector after a crash')
+$restartItem = $menu.Items.Add('Restart Vector after a crash or freeze')
 $restartItem.CheckOnClick = $true
 $restartItem.Checked = $script:restartVector
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
