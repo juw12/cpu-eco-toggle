@@ -13,8 +13,9 @@
 # Eco-only jobs ($ecoOnlyJobs, e.g. the OpenCode research queue) are the exception: they are
 #      slowed (fewer cores, priority unchanged) only while eco is ON and run at full speed when
 #      OFF.
-# Full-speed jobs ($fullSpeedJobs, e.g. scheduled weekly reports with a deadline) are never
-#      slowed, ON or OFF: no low priority, no core limit, no memory trim.
+# Full-speed jobs ($fullSpeedJobs: scheduled weekly reports with a deadline, and the small
+#      programs Outlook or a phone waits for) are never slowed, ON or OFF: no low priority,
+#      no core limit, no memory trim.
 # Exit: every process changed by this tool gets its original priority and cores back.
 #
 # Left-click the tray icon to toggle. Launching the script again while it runs also toggles
@@ -355,6 +356,13 @@ $fullSpeedJobs = @(
     @{ Name = 'powershell'; CommandLineContains = 'run_weekly.ps1' }            # weekly yield report + yield deck
     @{ Name = 'powershell'; CommandLineContains = 'run_approval_weekly.ps1' }   # weekly approval slides
     @{ Name = 'powershell'; CommandLineContains = 'run_weekly_ai_usage.ps1' }   # weekly AI usage deck
+    # Small programs that something else waits for. They use almost no CPU, so they cost nothing at
+    # full speed, but slowed down they hold up what waits for them.
+    # (2026-11-17: on a PC at 100% CPU, hidden Python programs put at low priority were not run at all
+    # for 9 to 55 s at a time. The phone waited that long for Titip. Outlook calls the archiver for
+    # every new and sent mail and waits for its answer, so Outlook itself can freeze that long.)
+    @{ Name = 'pythonw'; CommandLineContains = 'Titip.pyw' }                    # Titip: Outlook mail on the phone
+    @{ Name = 'pythonw'; CommandLineContains = 'outlook_archiver.py' }          # moves new mail to the archive; Outlook waits for it
 )
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left

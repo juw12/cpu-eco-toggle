@@ -71,6 +71,16 @@ starts). By default it holds three weekly report runners (`run_weekly.ps1`,
 `run_approval_weekly.ps1`, `run_weekly_ai_usage.ps1`): at low priority on a PC at 100% CPU their
 page loads timed out and the Monday reports did not go out.
 
+It also holds two small programs that something else waits for: **Titip** (`Titip.pyw`, Outlook
+mail on the phone) and the **Outlook archiver** (`outlook_archiver.py`). Measured on 2026-11-17 on
+a PC at 100% CPU: hidden Python programs at low priority were not run at all for 9 to 55 seconds
+at a time. The phone waited that long for Titip to answer. Outlook calls the archiver for every
+new and sent mail and waits for its answer, so a slowed archiver can freeze Outlook as well. Both
+use almost no CPU, so leaving them at full speed costs nothing.
+
+A change to these lists takes effect the next time CPU Eco Toggle starts (Exit in the tray menu,
+then start it again, or the next sign-in).
+
 ## Install
 
 ```powershell
