@@ -78,6 +78,11 @@ at a time. The phone waited that long for Titip to answer. Outlook calls the arc
 new and sent mail and waits for its answer, so a slowed archiver can freeze Outlook as well. Both
 use almost no CPU, so leaving them at full speed costs nothing.
 
+The **task herald** (`task_herald.py`) is on the list too. It shows Buddy's pointer on a window a
+scheduled task opens (Gmail in Chrome, a command window). Measured on 2026-11-18: at low priority
+its looks took 3 to 112 seconds, so the pointer came long after the window. It sets High priority
+itself and uses about 3% of one core.
+
 A change to these lists takes effect the next time CPU Eco Toggle starts (Exit in the tray menu,
 then start it again, or the next sign-in).
 
