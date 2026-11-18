@@ -363,10 +363,6 @@ $fullSpeedJobs = @(
     # every new and sent mail and waits for its answer, so Outlook itself can freeze that long.)
     @{ Name = 'pythonw'; CommandLineContains = 'Titip.pyw' }                    # Titip: Outlook mail on the phone
     @{ Name = 'pythonw'; CommandLineContains = 'outlook_archiver.py' }          # moves new mail to the archive; Outlook waits for it
-    # (2026-11-18: the task herald shows Buddy's pointer on a window a scheduled task opens. At low
-    # priority its looks took 3 to 112 s, so the pointer came long after the window. It sets High
-    # priority itself and uses about 3% of one core; this line keeps the guard from lowering it.)
-    @{ Name = 'pythonw'; CommandLineContains = 'task_herald.py' }               # task herald: pointer on windows of scheduled tasks
 )
 $reapplyEveryTicks = 10               # 10 x 3 s = 30 s
 $guardCommitFreeGB = 6                # warn when less virtual memory than this is left
